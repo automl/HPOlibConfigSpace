@@ -9,22 +9,30 @@ from HPOlibConfigSpace.hyperparameters import Hyperparameter
 class AbstractForbiddenComponent(object):
     __metaclass__ = ABCMeta
 
-
     @abstractmethod
     def __init__(self):
         pass
-
 
     @abstractmethod
     def __repr__(self):
         pass
 
-    @abstractmethod
+    # http://stackoverflow.com/a/25176504/4636294
     def __eq__(self, other):
-        pass
+        """Override the default Equals behavior"""
+        if isinstance(other, self.__class__):
+            return self.__dict__ == other.__dict__
+        return NotImplemented
 
     def __ne__(self, other):
-        return not self.__eq__(other)
+        """Define a non-equality test"""
+        if isinstance(other, self.__class__):
+            return not self.__eq__(other)
+        return NotImplemented
+
+    def __hash__(self):
+        """Override the default hash behavior (that returns the id or the object)"""
+        return hash(tuple(sorted(self.__dict__.items())))
 
     @abstractmethod
     def get_descendant_literal_clauses(self):
@@ -52,16 +60,6 @@ class SingleValueForbiddenClause(AbstractForbiddenClause):
                              "legal hyperparameter value for '%s', but got "
                              "'%s'" % (hyperparameter, str(value)))
         self.value = value
-
-    def __eq__(self, other):
-        if type(self) != type(other):
-            return False
-        elif self.hyperparameter != other.hyperparameter:
-            return False
-        elif self.value != other.value:
-            return False
-        else:
-            return True
 
     def is_forbidden(self, instantiated_hyperparameters, strict=True):
         value = None
@@ -98,16 +96,6 @@ class MultipleValueForbiddenClause(AbstractForbiddenClause):
                                  "legal hyperparameter value for '%s', but got "
                                  "'%s'" % (hyperparameter, str(value)))
         self.values = values
-
-    def __eq__(self, other):
-        if type(self) != type(other):
-            return False
-        elif self.hyperparameter != other.hyperparameter:
-            return False
-        elif self.values != other.values:
-            return False
-        else:
-            return True
 
     def is_forbidden(self, instantiated_hyperparameters, strict=True):
         value = None
@@ -146,8 +134,10 @@ class ForbiddenInClause(MultipleValueForbiddenClause):
         self.values = set(self.values)
 
     def __repr__(self):
-        return "Forbidden: %s in %s" % (self.hyperparameter.name,
-            "{" + ", ".join((str(value) for value in sorted(self.values))) + "}")
+        return "Forbidden: %s in %s" % (
+            self.hyperparameter.name,
+            "{" + ", ".join((str(value)
+                             for value in sorted(self.values))) + "}")
 
     def _is_forbidden(self, value):
         return value in self.values
@@ -161,26 +151,14 @@ class AbstractForbiddenConjunction(AbstractForbiddenComponent):
             if not isinstance(component, AbstractForbiddenComponent):
                 raise TypeError("Argument #%d is not an instance of %s, "
                                 "but %s" % (
-                    idx, AbstractForbiddenComponent, type(component)))
+                                    idx, AbstractForbiddenComponent,
+                                    type(component)))
 
         self.components = args
 
     @abstractmethod
     def __repr__(self):
         pass
-
-    def __eq__(self, other):
-        if type(self) != type(other):
-            return False
-        elif len(self.components) != len(other.components):
-            return False
-        else:
-            for comp1, comp2 in six.moves.zip(
-                    sorted(self.components, key=lambda t: t.__repr__()),
-                    sorted(other.components, key=lambda t: t.__repr__())):
-                if comp1 != comp2:
-                    return False
-        return True
 
     def get_descendant_literal_clauses(self):
         children = []
@@ -201,8 +179,9 @@ class AbstractForbiddenConjunction(AbstractForbiddenComponent):
             if dlc.hyperparameter.name not in ihp_names:
                 if strict:
                     raise ValueError("Is_forbidden must be called with all "
-                                     "instanstatiated hyperparameters in the and conjunction of "
-                                     "forbidden clauses; you are (at least) missing "
+                                     "instanstatiated hyperparameters in the "
+                                     "and conjunction of forbidden clauses; "
+                                     "you are (at least) missing "
                                      "'%s'" % dlc.hyperparameter.name)
                 else:
                     return False
@@ -234,6 +213,3 @@ class ForbiddenAndConjunction(AbstractForbiddenConjunction):
 
     def _is_forbidden(self, evaluations):
         return six.moves.reduce(operator.and_, evaluations)
-
-
-

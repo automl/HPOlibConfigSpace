@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-##
+# #
 # wrapping: A program making it easy to use hyperparameter
 # optimization software.
 # Copyright (C) 2013 Katharina Eggensperger and Matthias Feurer
@@ -21,7 +21,7 @@
 __authors__ = ["Katharina Eggensperger", "Matthias Feurer"]
 __contact__ = "automl.org"
 
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, deque, OrderedDict
 import copy
 from itertools import product
 
@@ -32,7 +32,7 @@ import HPOlibConfigSpace.nx
 from HPOlibConfigSpace.hyperparameters import Hyperparameter, Constant, \
     CategoricalHyperparameter
 from HPOlibConfigSpace.conditions import ConditionComponent, \
-    AbstractCondition, AbstractConjunction, EqualsCondition
+    AbstractCondition, AbstractConjunction
 from HPOlibConfigSpace.forbidden import AbstractForbiddenComponent
 
 
@@ -44,11 +44,13 @@ class ConfigurationSpace(object):
 
     """Represent a configuration space.
     """
+
     def __init__(self, seed=1):
         self._hyperparameters = OrderedDict()
         self._children = defaultdict(dict)
         self._parents = defaultdict(dict)
-        # For speed reasons
+        # changing this to a normal dict will break sampling because there is
+        #  no guarantee that the parent of a condition was evaluated before
         self._conditionsals = OrderedDict()
         self.forbidden_clauses = []
         self.random = np.random.RandomState(seed)
@@ -59,7 +61,8 @@ class ConfigurationSpace(object):
 
         Parameters
         ----------
-        hyperparameter : :class:`HPOlibConfigSpace.hyperparameters.Hyperparameter`
+        hyperparameter : :class:`HPOlibConfigSpace.hyperparameters.
+                Hyperparameter`
             The hyperparameter to add.
         """
         if not isinstance(hyperparameter, Hyperparameter):
@@ -80,9 +83,11 @@ class ConfigurationSpace(object):
             '__HPOlib_configuration_space_root__'] = None
 
         self._check_default_configuration()
+        self._sort_hyperparameters()
         # Update the vector
-        types = [(hp.name, int if isinstance(hp, (CategoricalHyperparameter, Constant))
-                               else float)
+        types = [(hp.name,
+                  int if isinstance(hp, (CategoricalHyperparameter, Constant))
+                  else float)
                  for hp in self._hyperparameters.values()]
         self._vector_types = types
         return hyperparameter
@@ -94,8 +99,6 @@ class ConfigurationSpace(object):
         # The following array keeps track of all edges which must be
         # added to the DiGraph; if the checks don't raise any Exception,
         # these edges are finally added at the end of the function
-        edges_to_add = []
-
         if not isinstance(condition, ConditionComponent):
             raise TypeError("The method add_condition must be called "
                             "with an instance of "
@@ -123,13 +126,14 @@ class ConfigurationSpace(object):
         self._check_edge(parent_node, child_node, condition)
         try:
             # TODO maybe this has to be done more carefully
-            del self._children['__HPOlib_configuration_space_root__'][child_node]
-        except:
+            del self._children['__HPOlib_configuration_space_root__'][
+                child_node]
+        except Exception:
             pass
 
         try:
             del self._parents[child_node]['__HPOlib_configuration_space_root__']
-        except:
+        except Exception:
             pass
 
         self._children[parent_node][child_node] = condition
@@ -141,7 +145,7 @@ class ConfigurationSpace(object):
         # check if both nodes are already inserted into the graph
         if child_node not in self._hyperparameters:
             raise ValueError("Child hyperparameter '%s' not in configuration "
-                             "space." % (child_node))
+                             "space." % child_node)
         if parent_node not in self._hyperparameters:
             raise ValueError("Parent hyperparameter '%s' not in configuration "
                              "space." % parent_node)
@@ -169,10 +173,42 @@ class ConfigurationSpace(object):
                                  "%s" % (str(other_condition), str(condition)))
 
     def _sort_hyperparameters(self):
-        tmp_dag = self._create_tmp_dag()
-        nodes = HPOlibConfigSpace.nx.algorithms.topological_sort(tmp_dag)
-        nodes = [node for node in nodes if
-                 node != '__HPOlib_configuration_space_root__']
+        levels = dict()
+        to_visit = deque()
+        for hp_name in self._hyperparameters:
+            to_visit.appendleft(hp_name)
+
+        while len(to_visit) > 0:
+            current = to_visit.pop()
+            if '__HPOlib_configuration_space_root__' in self._parents[current]:
+                assert len(self._parents[current]) == 1
+                levels[current] = 1
+
+            else:
+                all_parents_visited = True
+                depth = -1
+                for parent in self._parents[current]:
+                    if parent not in levels:
+                        all_parents_visited = False
+                        break
+                    else:
+                        depth = max(depth, levels[parent] + 1)
+
+                if all_parents_visited:
+                    levels[current] = depth
+                else:
+                    to_visit.appendleft(current)
+
+        by_level = defaultdict(list)
+        for hp in levels:
+            level = levels[hp]
+            by_level[level].append(hp)
+
+        nodes = []
+        # Sort and add to list
+        for level in by_level:
+            by_level[level].sort()
+            nodes.extend(by_level[level])
 
         # Resort the OrderedDict
         for node in nodes:
@@ -198,7 +234,7 @@ class ConfigurationSpace(object):
                 try:
                     tmp_dag.remove_edge('__HPOlib_configuration_space_root__',
                                         child_node_)
-                except:
+                except Exception:
                     pass
                 condition = self._children[parent_node_][child_node_]
                 tmp_dag.add_edge(parent_node_, child_node_, condition=condition)
@@ -227,7 +263,8 @@ class ConfigurationSpace(object):
         if not isinstance(configuration_space, ConfigurationSpace):
             raise TypeError("The method add_configuration_space must be "
                             "called with an instance of "
-                            "HPOlibConfigSpace.configuration_space.ConfigurationSpace.")
+                            "HPOlibConfigSpace.configuration_space."
+                            "ConfigurationSpace.")
 
         for hp in configuration_space.get_hyperparameters():
             new_parameter = copy.deepcopy(hp)
@@ -239,9 +276,11 @@ class ConfigurationSpace(object):
             dlcs = condition.get_descendant_literal_conditions()
             for dlc in dlcs:
                 if not dlc.child.name.startswith("%s%s" % (prefix, delimiter)):
-                    dlc.child.name = "%s%s%s" % (prefix, delimiter, dlc.child.name)
+                    dlc.child.name = "%s%s%s" % (
+                    prefix, delimiter, dlc.child.name)
                 if not dlc.parent.name.startswith("%s%s" % (prefix, delimiter)):
-                    dlc.parent.name = "%s%s%s" % (prefix, delimiter, dlc.parent.name)
+                    dlc.parent.name = "%s%s%s" % (
+                    prefix, delimiter, dlc.parent.name)
             self.add_condition(condition)
 
         for forbidden_clause in configuration_space.forbidden_clauses:
@@ -250,11 +289,11 @@ class ConfigurationSpace(object):
                 if not dlc.hyperparameter.name.startswith(
                                 "%s%s" % (prefix, delimiter)):
                     dlc.hyperparameter.name = "%s%s%s" % \
-                        (prefix, delimiter, dlc.hyperparameter.name)
+                                              (prefix, delimiter,
+                                               dlc.hyperparameter.name)
             self.add_forbidden_clause(forbidden_clause)
 
         return configuration_space
-
 
     def get_hyperparameters(self):
         return list(self._hyperparameters.values())
@@ -347,7 +386,8 @@ class ConfigurationSpace(object):
 
     def get_all_uncoditional_hyperparameters(self):
         hyperparameters = [hp_name for hp_name in
-                           self._children['__HPOlib_configuration_space_root__']]
+                           self._children[
+                               '__HPOlib_configuration_space_root__']]
         return hyperparameters
 
     def get_all_conditional_hyperparameters(self):
@@ -367,11 +407,11 @@ class ConfigurationSpace(object):
                 parent_names = [c.parent.name for c in
                                 condition.get_descendant_literal_conditions()]
 
-                parents = {parent_name: instantiated_hyperparameters[parent_name]
-                           for parent_name in parent_names}
+                parents = {
+                    parent_name: instantiated_hyperparameters[parent_name]
+                    for parent_name in parent_names
+                }
 
-                # if len(parents) == 1:
-                #     parents = parents[0]
                 if not condition.evaluate(parents):
                     # TODO find out why a configuration is illegal!
                     active = False
@@ -383,7 +423,7 @@ class ConfigurationSpace(object):
             else:
                 instantiated_hyperparameters[hp.name] = hp.default
 
-            # TODO copy paste from check configuration
+                # TODO copy paste from check configuration
 
         # TODO add an extra Exception type for the case that the default
         # configuration is forbidden!
@@ -418,7 +458,8 @@ class ConfigurationSpace(object):
 
                 # if one of the parents is None, the hyperparameter cannot be
                 # active! Else we have to check this
-                if any([parent_value is None for parent_value in parents.values()]):
+                if any([parent_value is None for parent_value in
+                        parents.values()]):
                     active = False
 
                 else:
@@ -446,23 +487,28 @@ class ConfigurationSpace(object):
         for clause in self.forbidden_clauses:
             if clause.is_forbidden(configuration, strict=False):
                 raise ValueError("%sviolates forbidden clause %s" % (
-                                 str(configuration), str(clause)))
+                    str(configuration), str(clause)))
 
+    # http://stackoverflow.com/a/25176504/4636294
     def __eq__(self, other):
-        if type(self) != type(other):
-            return False
-        else:
-            tmp_dag = self._create_tmp_dag()
-            other_tmp_dag = other._create_tmp_dag()
-            return tmp_dag.graph == other_tmp_dag.graph and \
-                   tmp_dag.node == other_tmp_dag.node and \
-                   tmp_dag.adj == other_tmp_dag.adj and \
-                   tmp_dag.pred == other_tmp_dag.pred and \
-                   tmp_dag.succ == other_tmp_dag.succ and \
-                   tmp_dag.edge == other_tmp_dag.edge
+        """Override the default Equals behavior"""
+        if isinstance(other, self.__class__):
+            this_dict = self.__dict__.copy()
+            del this_dict['random']
+            other_dict = other.__dict__.copy()
+            del other_dict['random']
+            return this_dict == other_dict
+        return NotImplemented
 
     def __ne__(self, other):
-        return not self.__eq__(other)
+        """Define a non-equality test"""
+        if isinstance(other, self.__class__):
+            return not self.__eq__(other)
+        return NotImplemented
+
+    def __hash__(self):
+        """Override the default hash behavior (that returns the id or the object)"""
+        return hash(tuple(sorted(self.__dict__.items())))
 
     def __repr__(self):
         retval = six.StringIO()
@@ -477,7 +523,7 @@ class ConfigurationSpace(object):
             retval.write("\n")
 
         conditions = sorted(self.get_conditions(),
-                            key=lambda t: t.child.name)
+                            key=lambda t: str(t))
         if conditions:
             retval.write("  Conditions:\n")
             retval.write("    ")
@@ -499,6 +545,8 @@ class ConfigurationSpace(object):
         iteration = 0
         missing = size
         accepted_configurations = []
+        num_hyperparameters = len(self._hyperparameters)
+
         while len(accepted_configurations) < size:
             if missing != size:
                 missing = int(1.1 * missing)
@@ -508,25 +556,34 @@ class ConfigurationSpace(object):
                 hyperparameter = self._hyperparameters[hp_name]
                 vector[hp_name] = hyperparameter._sample(self.random, missing)
 
-            for i, hp_name in product(range(missing), self.get_all_conditional_hyperparameters()):
-                conditions = self._get_parent_conditions_of(hp_name)
-                add = True
-                for condition in conditions:
-                    parent_names = [c.parent.name for c in
-                                    condition.get_descendant_literal_conditions()]
+            for i in range(missing):
+                inactive = set()
+                for hp_name in self.get_all_conditional_hyperparameters():
+                    conditions = self._get_parent_conditions_of(hp_name)
+                    add = True
+                    for condition in conditions:
+                        parent_names = [c.parent.name for c in
+                                        condition.get_descendant_literal_conditions()]
 
-                    parents = {parent_name: self._hyperparameters[parent_name].
-                                            _transform(vector[i][parent_name])
-                               for parent_name in parent_names}
+                        parents = {parent_name: self._hyperparameters[
+                                       parent_name]._transform(vector[i][
+                                           parent_name])
+                                   for parent_name in parent_names}
 
-                    if not condition.evaluate(parents):
-                        add = False
+                        # A parent condition is not fulfilled
+                        if np.sum([parent_name in inactive
+                                   for parent_name in parent_names]) > 0:
+                            add = False
+                            break
+                        if not condition.evaluate(parents):
+                            add = False
+                            break
 
-                if not add:
-                    hyperparameter = self._hyperparameters[hp_name]
-                    vector[hp_name][i] = hyperparameter._nan
-                else:
-                    pass
+                    if not add:
+                        hyperparameter = self._hyperparameters[hp_name]
+                        vector[hp_name][i] = hyperparameter._nan
+                        inactive.add(hp_name)
+
 
             for i in range(missing):
                 try:
@@ -537,8 +594,9 @@ class ConfigurationSpace(object):
                     iteration += 1
 
                     if iteration == size * 100:
-                        raise ValueError("Cannot sample valid configuration for "
-                                         "%s" % self)
+                        raise ValueError(
+                            "Cannot sample valid configuration for "
+                            "%s" % self)
 
             missing = size - len(accepted_configurations)
 
@@ -612,14 +670,22 @@ class Configuration(object):
     def __contains__(self, item):
         return item in self._values
 
+    # http://stackoverflow.com/a/25176504/4636294
     def __eq__(self, other):
-        if type(self) != type(other):
-            return False
-        elif self.configuration_space != other.configuration_space:
-            return False
-        else:
-            # TODO: this is a pretty bad equality test
-            return self.__repr__() == other.__repr__()
+        """Override the default Equals behavior"""
+        if isinstance(other, self.__class__):
+            return self.__dict__ == other.__dict__
+        return NotImplemented
+
+    def __ne__(self, other):
+        """Define a non-equality test"""
+        if isinstance(other, self.__class__):
+            return not self.__eq__(other)
+        return NotImplemented
+
+    def __hash__(self):
+        """Override the default hash behavior (that returns the id or the object)"""
+        return hash(tuple(sorted(self.__dict__.items())))
 
     def _populate_values(self):
         for hyperparameter in self.configuration_space.get_hyperparameters():
