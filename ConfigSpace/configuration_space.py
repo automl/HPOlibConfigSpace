@@ -56,6 +56,11 @@ class ConfigurationSpace(object):
         self.forbidden_clauses = []
         self.random = np.random.RandomState(seed)
 
+    def generate_all_continuous_from_bounds(self, bounds):
+        for i,(l,u) in enumerate(bounds):
+            hp = ConfigSpace.UniformFloatHyperparameter('x%d' % i, l, u)
+            self.add_hyperparameter(hp)
+
     def add_hyperparameter(self, hyperparameter):
         """Add a hyperparameter to the configuration space.
 
@@ -455,7 +460,8 @@ class ConfigurationSpace(object):
     def check_configuration(self, configuration):
         if not isinstance(configuration, Configuration):
             raise TypeError("The method check_configuration must be called "
-                            "with an instance of %s." % Configuration)
+                            "with an instance of %s. " 
+                            "Your input was of type %s"% (Configuration, type(configuration)))
         self._check_configuration(configuration)
 
     def _check_configuration(self, configuration,
@@ -505,6 +511,7 @@ class ConfigurationSpace(object):
             if clause.is_forbidden(configuration, strict=False):
                 raise ValueError("%sviolates forbidden clause %s" % (
                     str(configuration), str(clause)))
+
 
     # http://stackoverflow.com/a/25176504/4636294
     def __eq__(self, other):
@@ -557,6 +564,10 @@ class ConfigurationSpace(object):
 
         retval.seek(0)
         return retval.getvalue()
+
+    def __iter__(self):
+        """ Allows to iterate over the hyperparameter names in (hopefully?) the right order."""
+        return iter(self._hyperparameters.keys())
 
     def sample_configuration(self, size=1):
         iteration = 0
@@ -810,6 +821,13 @@ class Configuration(object):
         return self._values
 
     def get_array(self):
+        """
+        Returns
+        -------
+        numpy.ndarray
+            internal vector representation of the configuration. All
+            continuous values are scaled between zero and one.
+        """
         return self._vector
 
 
